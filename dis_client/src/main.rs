@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
-struct APIResponse {
-    data: Data,
+struct ApiResponse {
+    data: ApiData,
 }
 
 #[derive(Debug, Deserialize)]
-struct Data {
+struct ApiData {
     amount: String,
 }
 
@@ -28,14 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("You selected - cache");
             if args.len() >= 1 && args[2].starts_with("--times=") {
                 let times: u64 = args[2].split('=').nth(1).and_then(|s| s.parse().ok()).unwrap_or(10);
-                dis_client(times).await?;
+                custom_client(times).await?;
             } else {
                 println!("Invalid argument for cache mode. Use --times=<seconds>.");
             }
         }
         "--mode=read" => {
             println!("You selected read mode ");
-            read_mode()?;
+            read_operation()?;
         }
         _ => {
             println!("Invalid mode");
@@ -51,32 +51,31 @@ fn print_usage() {
     println!(" cargo run --mode=<cache/read> --times=<secs>");
 }
 
-async fn dis_client(times: u64) -> Result<(), Box<dyn std::error::Error>> {
+async fn custom_client(times: u64) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
 
-    let shared_agg_data = Arc::new(Mutex::new(AggregatorData::new()));
+    let shared_data = Arc::new(Mutex::new(AggregatedData::new()));
 
     let handles: Vec<_> = (1..=5)
         .map(|i| {
-            let shared_agg_data_clone = shared_agg_data.clone();
-            tokio::spawn(simulate_client(i, times, start_time, shared_agg_data_clone))
+            let shared_data_clone = shared_data.clone();
+            tokio::spawn(simulate_api_client(i, times, start_time, shared_data_clone))
         })
         .collect();
 
-   
     for handle in handles {
         let _ = handle.await?;
     }
 
-    let final_aggregate = shared_agg_data.lock().unwrap().calculate_final_aggregate();
-    println!("Aggregator: Final aggregate of USD prices of BTC is: {}", final_aggregate);
+    let final_aggregate = shared_data.lock().unwrap().compute_final_aggregate();
+    println!("Aggregated Result: Final aggregate of USD prices of BTC is: {}", final_aggregate);
 
-    write_to_file(final_aggregate)?;
+    write_result_to_file(final_aggregate)?;
 
     Ok(())
 }
 
-fn write_to_file(final_aggregate: f64) -> Result<(), Box<dyn std::error::Error>> {
+fn write_result_to_file(final_aggregate: f64) -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "result.txt";
 
     let mut file = OpenOptions::new()
@@ -90,41 +89,39 @@ fn write_to_file(final_aggregate: f64) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-async fn simulate_client(
+async fn simulate_api_client(
     client_id: usize,
     times: u64,
     start_time: Instant,
-    shared_agg_data: Arc<Mutex<AggregatorData>>,
+    shared_data: Arc<Mutex<AggregatedData>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + 'static>> {
     let url = "https://api.coinbase.com/v2/prices/spot?currency=USD";
-    let client = reqwest::Client::new();
+    let api_client = reqwest::Client::new();
 
-    let mut sum = 0.0;
+    let mut total_amount = 0.0;
     let mut count = 0;
 
     while start_time.elapsed().as_secs() < times {
-        if let Ok(response) = client.get(url).send().await {
-            if let Ok(message) = response.json::<APIResponse>().await {
+        if let Ok(response) = api_client.get(url).send().await {
+            if let Ok(message) = response.json::<ApiResponse>().await {
                 let amount = message.data.amount.parse::<f64>().unwrap_or(0.0);
-                sum += amount;
+                total_amount += amount;
                 count += 1;
             }
         }
 
-        
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    let average = sum / count as f64;
-    println!("Client {}: Average USD price of BTC is: {}", client_id, average);
+    let average_amount = total_amount / count as f64;
+    println!("Client {}: Average USD price of BTC is: {}", client_id, average_amount);
 
-   
-    shared_agg_data.lock().unwrap().add_average(average);
+    shared_data.lock().unwrap().add_average(average_amount);
 
     Ok(())
 }
 
-fn read_mode() -> Result<(), Box<dyn std::error::Error>> {
+fn read_operation() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "result.txt";
 
     match std::fs::metadata(file_path) {
@@ -150,20 +147,20 @@ fn read_mode() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Debug)]
-struct AggregatorData {
+struct AggregatedData {
     averages: Vec<f64>,
 }
 
-impl AggregatorData {
+impl AggregatedData {
     fn new() -> Self {
-        AggregatorData { averages: Vec::new() }
+        AggregatedData { averages: Vec::new() }
     }
 
     fn add_average(&mut self, average: f64) {
         self.averages.push(average);
     }
 
-    fn calculate_final_aggregate(&self) -> f64 {
+    fn compute_final_aggregate(&self) -> f64 {
         if self.averages.is_empty() {
             0.0
         } else {
